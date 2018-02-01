@@ -22,7 +22,7 @@ func (h *HonorDecodeInStruct) Decode(env string) error {
 }
 
 type Specification struct {
-	Embedded
+	Embedded                     `desc:"can we document a struct"`
 	EmbeddedButIgnored           `ignored:"true"`
 	Debug                        bool
 	Port                         int
@@ -32,14 +32,16 @@ type Specification struct {
 	Timeout                      time.Duration
 	AdminUsers                   []string
 	MagicNumbers                 []int
+	ColorCodes                   map[string]int
 	MultiWordVar                 string
+	MultiWordVarWithAutoSplit    uint32 `split_words:"true"`
 	SomePointer                  *string
-	SomePointerWithDefault       *string `default:"foo2baz"`
-	MultiWordVarWithAlt          string  `envconfig:"MULTI_WORD_VAR_WITH_ALT"`
+	SomePointerWithDefault       *string `default:"foo2baz" desc:"foorbar is the word"`
+	MultiWordVarWithAlt          string  `envconfig:"MULTI_WORD_VAR_WITH_ALT" desc:"what alt"`
 	MultiWordVarWithLowerCaseAlt string  `envconfig:"multi_word_var_with_lower_case_alt"`
 	NoPrefixWithAlt              string  `envconfig:"SERVICE_HOST"`
 	DefaultVar                   string  `default:"foobar"`
-	RequiredVar                  string  `required:"true"`
+	RequiredVar                  string  `required:"True"`
 	NoPrefixDefault              string  `envconfig:"BROKER" default:"127.0.0.1"`
 	RequiredDefault              string  `required:"true" default:"foo2bar"`
 	Ignored                      string  `ignored:"true"`
@@ -50,10 +52,11 @@ type Specification struct {
 	AfterNested  string
 	DecodeStruct HonorDecodeInStruct `envconfig:"honor"`
 	Datetime     time.Time
+	MapField     map[string]string `default:"one:two,three:four"`
 }
 
 type Embedded struct {
-	Enabled             bool
+	Enabled             bool `desc:"some embedded value"`
 	EmbeddedPort        int
 	MultiWordVar        string
 	MultiWordVarWithAlt string `envconfig:"MULTI_WITH_DIFFERENT_ALT"`
@@ -76,6 +79,7 @@ func TestProcess(t *testing.T) {
 	os.Setenv("ENV_CONFIG_TIMEOUT", "2m")
 	os.Setenv("ENV_CONFIG_ADMINUSERS", "John,Adam,Will")
 	os.Setenv("ENV_CONFIG_MAGICNUMBERS", "5,10,20")
+	os.Setenv("ENV_CONFIG_COLORCODES", "red:1,green:2,blue:3")
 	os.Setenv("SERVICE_HOST", "127.0.0.1")
 	os.Setenv("ENV_CONFIG_TTL", "30")
 	os.Setenv("ENV_CONFIG_REQUIREDVAR", "foo")
@@ -84,6 +88,7 @@ func TestProcess(t *testing.T) {
 	os.Setenv("ENV_CONFIG_AFTERNESTED", "after")
 	os.Setenv("ENV_CONFIG_HONOR", "honor")
 	os.Setenv("ENV_CONFIG_DATETIME", "2016-08-16T18:57:05Z")
+	os.Setenv("ENV_CONFIG_MULTI_WORD_VAR_WITH_AUTO_SPLIT", "24")
 	err := Process("env_config", &s)
 	if err != nil {
 		t.Error(err.Error())
@@ -128,6 +133,21 @@ func TestProcess(t *testing.T) {
 		t.Errorf("expected empty string, got %#v", s.Ignored)
 	}
 
+	if len(s.ColorCodes) != 3 ||
+		s.ColorCodes["red"] != 1 ||
+		s.ColorCodes["green"] != 2 ||
+		s.ColorCodes["blue"] != 3 {
+		t.Errorf(
+			"expected %#v, got %#v",
+			map[string]int{
+				"red":   1,
+				"green": 2,
+				"blue":  3,
+			},
+			s.ColorCodes,
+		)
+	}
+
 	if s.NestedSpecification.Property != "iamnested" {
 		t.Errorf("expected '%s' string, got %#v", "iamnested", s.NestedSpecification.Property)
 	}
@@ -146,6 +166,10 @@ func TestProcess(t *testing.T) {
 
 	if expected := time.Date(2016, 8, 16, 18, 57, 05, 0, time.UTC); !s.Datetime.Equal(expected) {
 		t.Errorf("expected %s, got %s", expected.Format(time.RFC3339), s.Datetime.Format(time.RFC3339))
+	}
+
+	if s.MultiWordVarWithAutoSplit != 24 {
+		t.Errorf("expected %q, got %q", 24, s.MultiWordVarWithAutoSplit)
 	}
 }
 
@@ -220,6 +244,23 @@ func TestParseErrorUint(t *testing.T) {
 	}
 }
 
+func TestParseErrorSplitWords(t *testing.T) {
+	var s Specification
+	os.Clearenv()
+	os.Setenv("ENV_CONFIG_MULTI_WORD_VAR_WITH_AUTO_SPLIT", "shakespeare")
+	err := Process("env_config", &s)
+	v, ok := err.(*ParseError)
+	if !ok {
+		t.Errorf("expected ParseError, got %v", v)
+	}
+	if v.FieldName != "MultiWordVarWithAutoSplit" {
+		t.Errorf("expected %s, got %v", "", v.FieldName)
+	}
+	if s.MultiWordVarWithAutoSplit != 0 {
+		t.Errorf("expected %v, got %v", 0, s.MultiWordVarWithAutoSplit)
+	}
+}
+
 func TestErrInvalidSpecification(t *testing.T) {
 	m := make(map[string]string)
 	err := Process("env_config", &m)
@@ -283,6 +324,16 @@ func TestRequiredVar(t *testing.T) {
 
 	if s.RequiredVar != "foobar" {
 		t.Errorf("expected %s, got %s", "foobar", s.RequiredVar)
+	}
+}
+
+func TestRequiredMissing(t *testing.T) {
+	var s Specification
+	os.Clearenv()
+
+	err := Process("env_config", &s)
+	if err == nil {
+		t.Error("no failure when missing required variable")
 	}
 }
 
@@ -379,6 +430,24 @@ func TestPointerFieldBlank(t *testing.T) {
 
 	if s.SomePointer != nil {
 		t.Errorf("expected <nil>, got %q", *s.SomePointer)
+	}
+}
+
+func TestEmptyMapFieldOverride(t *testing.T) {
+	var s Specification
+	os.Clearenv()
+	os.Setenv("ENV_CONFIG_REQUIREDVAR", "foo")
+	os.Setenv("ENV_CONFIG_MAPFIELD", "")
+	if err := Process("env_config", &s); err != nil {
+		t.Error(err.Error())
+	}
+
+	if s.MapField == nil {
+		t.Error("expected empty map, got <nil>")
+	}
+
+	if len(s.MapField) != 0 {
+		t.Errorf("expected empty map, got map of size %d", len(s.MapField))
 	}
 }
 
